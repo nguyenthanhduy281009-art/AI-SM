@@ -1,43 +1,47 @@
+import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+from sklearn.ensemble import RandomForestClassifier
 
-def predict_bnb_fast(t_minutes=15):
-    try:
-        # 1. Lấy dữ liệu ngắn gọn hơn để tránh lag DevTools
-        # Khoảng cách 2 ngày, mỗi phút 1 dòng
-        data = yf.download('BNB-USD', period='2d', interval='1m', progress=False)
-        
-        if len(data) < 60:
-            print("Đang lấy thêm dữ liệu, Duy đợi xíu nhé...")
-            return
+st.title("🤖 AI Dự Đoán Giá BNB")
 
-        # 2. Tính toán kỹ thuật đơn giản (SMA)
-        # Tính đường trung bình động 10 phút
-        data['SMA_10'] = data['Close'].rolling(window=10).mean()
-        
-        # Lấy giá hiện tại và giá 10 phút trước
-        current_price = data['Close'].iloc[-1]
-        prev_price = data['Close'].iloc[-10]
-        
-        # 3. Logic dự đoán dựa trên xu hướng (Trend Following)
-        diff = current_price - prev_price
-        change_pct = (diff / prev_price) * 100
-        
-        # Tính tỷ lệ xác suất dựa trên độ mạnh của xu hướng
-        # Giả định cơ bản: Nếu đang tăng mạnh thì 65% tiếp tục tăng trong ngắn hạn
-        confidence = 50 + min(abs(change_pct) * 10, 35) 
-        
-        trend = "TĂNG 📈" if diff > 0 else "GIẢM 📉"
-        
-        print(f"--- KẾT QUẢ CHO DUY ---")
-        print(f"Giá BNB hiện tại: ${current_price:.2f}")
-        print(f"Dự đoán sau {t_minutes}p: {trend}")
-        print(f"Tỷ lệ tin cậy: {confidence:.1f}%")
-        print("-----------------------")
+# Nhập dữ liệu từ người dùng
+t_time = st.number_input("Bạn muốn dự đoán sau bao nhiêu phút?", min_value=1, value=5)
+user_price = st.number_input("Nhập giá BNB hiện tại (USD):", min_value=0.0)
 
-    except Exception as e:
-        print(f"Lỗi rồi Duy ơi: {e}")
+if st.button("Phân tích ngay"):
+    with st.spinner('Đang học dữ liệu thị trường...'):
+        # Lấy dữ liệu 7 ngày gần nhất, khung 1 phút
+        data = yf.download("BNB-USD", period="7d", interval="1m")
+        df = data[['Close']].copy()
+        
+        # TẠO CHIẾN THUẬT TĂNG TỶ LỆ ĐÚNG: Thêm các chỉ báo kỹ thuật
+        df['MA5'] = df['Close'].rolling(5).mean()
+        df['MA20'] = df['Close'].rolling(20).mean()
+        df['Volatility'] = df['Close'].diff()
+        
+        # Gán nhãn: 1 là Tăng, 0 là Giảm sau t_time
+        df['Target'] = (df['Close'].shift(-t_time) > df['Close']).astype(int)
+        df.dropna(inplace=True)
 
-# Chạy lệnh
-predict_bnb_fast(15)
+        # Huấn luyện AI
+        X = df[['Close', 'MA5', 'MA20', 'Volatility']]
+        y = df['Target']
+        
+        split = int(len(df) * 0.8)
+        model = RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42)
+        model.fit(X[:split], y[:split])
+        
+        # Tính tỷ lệ đúng thực tế
+        acc = model.score(X[split:], y[split:]) * 100
+        
+        # Dự đoán ván hiện tại
+        current_val = np.array([[user_price if user_price > 0 else df['Close'].iloc[-1], 
+                                 df['MA5'].iloc[-1], df['MA20'].iloc[-1], df['Volatility'].iloc[-1]]])
+        pred = model.predict(current_val)
+
+        # Hiển thị kết quả
+        st.success(f"Tỷ lệ đúng của mô hình trong 7 ngày qua: {acc:.2f}%")
+        result = "TĂNG 📈" if pred[0] == 1 else "GIẢM 📉"
+        st.header(f"Dự đoán sau {t_time} phút: {result}")
