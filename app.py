@@ -1,93 +1,108 @@
 import streamlit as st
-
-import yfinance as yf
-
 import pandas as pd
-
 import numpy as np
+import requests
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.preprocessing import StandardScaler
+import plotly.graph_objects as go
 
-from sklearn.ensemble import RandomForestClassifier
+st.set_page_config(page_title="AI BNB Predictor", layout="wide")
 
+st.title("🚀 AI Dự Đoán Giá BNB (Pro Version)")
 
+# ====== INPUT ======
+t_time = st.slider("⏱ Dự đoán sau bao nhiêu phút?", 1, 30, 5)
 
-st.title("🤖 AI Dự Đoán Giá BNB")
+# ====== LẤY DATA BINANCE ======
+@st.cache_data(ttl=60)
+def get_binance_data():
+    url = "https://api.binance.com/api/v3/klines"
+    params = {
+        "symbol": "BNBUSDT",
+        "interval": "1m",
+        "limit": 1000
+    }
+    data = requests.get(url, params=params).json()
+    df = pd.DataFrame(data)
 
+    df = df[[0, 4, 5]]
+    df.columns = ['time', 'close', 'volume']
 
+    df['time'] = pd.to_datetime(df['time'], unit='ms')
+    df['close'] = df['close'].astype(float)
+    df['volume'] = df['volume'].astype(float)
 
-# Nhập dữ liệu từ người dùng
+    return df
 
-t_time = st.number_input("Bạn muốn dự đoán sau bao nhiêu phút?", min_value=1, value=5)
+df = get_binance_data()
 
-user_price = st.number_input("Nhập giá BNB hiện tại (USD):", min_value=0.0)
+# ====== FEATURE ENGINEERING ======
+def add_indicators(df):
+    df['EMA10'] = df['close'].ewm(span=10).mean()
+    df['EMA20'] = df['close'].ewm(span=20).mean()
 
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
 
+    df['Volatility'] = df['close'].pct_change()
 
-if st.button("Phân tích ngay"):
+    df['MACD'] = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
 
-    with st.spinner('Đang học dữ liệu thị trường...'):
+    return df
 
-        # Lấy dữ liệu 7 ngày gần nhất, khung 1 phút
+df = add_indicators(df)
 
-        data = yf.download("BNB-USD", period="7d", interval="1m")
+# ====== TARGET ======
+df['Target'] = (df['close'].shift(-t_time) > df['close']).astype(int)
+df.dropna(inplace=True)
 
-        df = data[['Close']].copy()
+# ====== TRAIN MODEL ======
+features = ['close', 'volume', 'EMA10', 'EMA20', 'RSI', 'Volatility', 'MACD']
+X = df[features]
+y = df['Target']
 
-        
+split = int(len(df) * 0.8)
 
-        # TẠO CHIẾN THUẬT TĂNG TỶ LỆ ĐÚNG: Thêm các chỉ báo kỹ thuật
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
 
-        df['MA5'] = df['Close'].rolling(5).mean()
+model = GradientBoostingClassifier(n_estimators=150)
+model.fit(X_scaled[:split], y[:split])
 
-        df['MA20'] = df['Close'].rolling(20).mean()
+acc = model.score(X_scaled[split:], y[split:]) * 100
 
-        df['Volatility'] = df['Close'].diff()
+# ====== PREDICT ======
+latest = X.iloc[-1].values.reshape(1, -1)
+latest_scaled = scaler.transform(latest)
 
-        
+proba = model.predict_proba(latest_scaled)[0]
 
-        # Gán nhãn: 1 là Tăng, 0 là Giảm sau t_time
+up_prob = proba[1] * 100
+down_prob = proba[0] * 100
 
-        df['Target'] = (df['Close'].shift(-t_time) > df['Close']).astype(int)
+# ====== UI ======
+col1, col2 = st.columns(2)
 
-        df.dropna(inplace=True)
+with col1:
+    st.metric("📊 Độ chính xác gần đúng", f"{acc:.2f}%")
 
+    if up_prob > down_prob:
+        st.success(f"📈 Tăng ({up_prob:.1f}%)")
+    else:
+        st.error(f"📉 Giảm ({down_prob:.1f}%)")
 
+with col2:
+    st.write("### 📉 Biểu đồ giá")
 
-        # Huấn luyện AI
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df['time'], y=df['close'], name='Price'))
+    fig.add_trace(go.Scatter(x=df['time'], y=df['EMA10'], name='EMA10'))
+    fig.add_trace(go.Scatter(x=df['time'], y=df['EMA20'], name='EMA20'))
 
-        X = df[['Close', 'MA5', 'MA20', 'Volatility']]
+    st.plotly_chart(fig, use_container_width=True)
 
-        y = df['Target']
-
-        
-
-        split = int(len(df) * 0.8)
-
-        model = RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42)
-
-        model.fit(X[:split], y[:split])
-
-        
-
-        # Tính tỷ lệ đúng thực tế
-
-        acc = model.score(X[split:], y[split:]) * 100
-
-        
-
-        # Dự đoán ván hiện tại
-
-        current_val = np.array([[user_price if user_price > 0 else df['Close'].iloc[-1], 
-
-                                 df['MA5'].iloc[-1], df['MA20'].iloc[-1], df['Volatility'].iloc[-1]]])
-
-        pred = model.predict(current_val)
-
-
-
-        # Hiển thị kết quả
-
-        st.success(f"Tỷ lệ đúng của mô hình trong 7 ngày qua: {acc:.2f}%")
-
-        result = "TĂNG 📈" if pred[0] == 1 else "GIẢM 📉"
-
-        st.header(f"Dự đoán sau {t_time} phút: {result}")
+# ====== WARNING ======
+st.warning("⚠️ Đây chỉ là mô hình tham khảo. Không đảm bảo chính xác 100% khi trade thật.")
