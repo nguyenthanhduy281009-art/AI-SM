@@ -3,45 +3,78 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
+import plotly.graph_objects as go
 
-st.title("🤖 AI Dự Đoán Giá BNB")
+# Cấu hình giao diện rộng và đẹp hơn
+st.set_page_config(page_title="BNB AI Pro - Nguyen Thanh Duy", layout="wide")
 
-# Nhập dữ liệu từ người dùng
-t_time = st.number_input("Bạn muốn dự đoán sau bao nhiêu phút?", min_value=1, value=5)
-user_price = st.number_input("Nhập giá BNB hiện tại (USD):", min_value=0.0)
+st.title("🤖 AI BNB PREDICTOR PRO")
+st.markdown("---")
 
-if st.button("Phân tích ngay"):
-    with st.spinner('Đang học dữ liệu thị trường...'):
-        # Lấy dữ liệu 7 ngày gần nhất, khung 1 phút
-        data = yf.download("BNB-USD", period="7d", interval="1m")
-        df = data[['Close']].copy()
-        
-        # TẠO CHIẾN THUẬT TĂNG TỶ LỆ ĐÚNG: Thêm các chỉ báo kỹ thuật
-        df['MA5'] = df['Close'].rolling(5).mean()
-        df['MA20'] = df['Close'].rolling(20).mean()
-        df['Volatility'] = df['Close'].diff()
-        
-        # Gán nhãn: 1 là Tăng, 0 là Giảm sau t_time
-        df['Target'] = (df['Close'].shift(-t_time) > df['Close']).astype(int)
-        df.dropna(inplace=True)
+# Chia cột để giao diện gọn gàng
+col1, col2 = st.columns([1, 3])
 
-        # Huấn luyện AI
-        X = df[['Close', 'MA5', 'MA20', 'Volatility']]
-        y = df['Target']
-        
-        split = int(len(df) * 0.8)
-        model = RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42)
-        model.fit(X[:split], y[:split])
-        
-        # Tính tỷ lệ đúng thực tế
-        acc = model.score(X[split:], y[split:]) * 100
-        
-        # Dự đoán ván hiện tại
-        current_val = np.array([[user_price if user_price > 0 else df['Close'].iloc[-1], 
-                                 df['MA5'].iloc[-1], df['MA20'].iloc[-1], df['Volatility'].iloc[-1]]])
-        pred = model.predict(current_val)
+with col1:
+    st.subheader("⚙️ Cấu hình")
+    t_time = st.number_input("Thời gian dự đoán (phút):", min_value=1, value=5)
+    # Lấy giá thực tế tự động để Duy đỡ phải nhập tay
+    btn_analyze = st.button("🚀 PHÂN TÍCH NGAY", use_container_width=True)
 
-        # Hiển thị kết quả
-        st.success(f"Tỷ lệ đúng của mô hình trong 7 ngày qua: {acc:.2f}%")
-        result = "TĂNG 📈" if pred[0] == 1 else "GIẢM 📉"
-        st.header(f"Dự đoán sau {t_time} phút: {result}")
+with col2:
+    if btn_analyze:
+        with st.spinner('AI đang quét dữ liệu thị trường và tính toán chỉ báo...'):
+            # 1. Tải dữ liệu
+            data = yf.download("BNB-USD", period="7d", interval="1m", progress=False)
+            df = data[['Close']].copy()
+            
+            # 2. Nâng cấp bộ chỉ báo (Features) để tăng độ chính xác
+            df['MA5'] = df['Close'].rolling(5).mean()
+            df['MA20'] = df['Close'].rolling(20).mean()
+            # RSI: Chỉ số sức mạnh tương đối
+            delta = df['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            df['RSI'] = 100 - (100 / (1 + rs))
+            df['Volatility'] = df['Close'].diff()
+            
+            df.dropna(inplace=True)
+
+            # 3. Huấn luyện AI với Random Forest (Tăng n_estimators để ổn định hơn)
+            X = df[['Close', 'MA5', 'MA20', 'RSI', 'Volatility']]
+            y = (df['Close'].shift(-t_time) > df['Close']).astype(int)
+            
+            # Bỏ dòng cuối bị NaN do shift
+            X_train = X[:-t_time]
+            y_train = y[:-t_time]
+            
+            model = RandomForestClassifier(n_estimators=300, max_depth=12, random_state=42)
+            model.fit(X_train, y_train)
+
+            # 4. Dự đoán ván hiện tại
+            current_price = df['Close'].iloc[-1]
+            last_features = np.array([df[['Close', 'MA5', 'MA20', 'RSI', 'Volatility']].iloc[-1]])
+            pred = model.predict(last_features)[0]
+            prob = model.predict_proba(last_features)[0]
+
+            # --- HIỂN THỊ GIAO DIỆN CHUYÊN NGHIỆP ---
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Giá BNB Hiện Tại", f"${current_price:.2f}")
+            
+            res_text = "TĂNG 📈" if pred == 1 else "GIẢM 📉"
+            color = "green" if pred == 1 else "red"
+            c2.markdown(f"### Dự đoán: <span style='color:{color}'>{res_text}</span>", unsafe_allow_html=True)
+            
+            confidence = prob[pred] * 100
+            c3.metric("Độ tin cậy AI", f"{confidence:.2f}%")
+
+            # 5. Vẽ biểu đồ giá trực quan
+            st.markdown("### 📊 Biểu đồ diễn biến 7 ngày")
+            st.line_chart(df['Close'])
+
+            st.info(f"💡 Lưu ý: Hệ thống đã học từ {len(df)} mẫu dữ liệu gần nhất để đưa ra kết quả này.")
+    else:
+        st.write("👈 Nhấn nút bên trái để bắt đầu soi cầu BNB!")
+
+st.markdown("---")
+st.caption("Thiết kế bởi Nguyen Thanh Duy - Dữ liệu thực tế từ Yahoo Finance")
