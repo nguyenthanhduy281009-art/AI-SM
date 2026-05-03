@@ -3,75 +3,45 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
-import plotly.graph_objects as go
 
-# Cấu hình trang
-st.set_page_config(page_title="BNB AI Predictor - Duy", layout="wide")
+st.title("🤖 AI Dự Đoán Giá BNB")
 
-# Tùy chỉnh CSS để giao diện đẹp hơn
-st.markdown("""
-    <style>
-    .main { background-color: #0e1117; }
-    .stMetric { background-color: #1e2130; padding: 15px; border-radius: 10px; border: 1px solid #3e4253; }
-    </style>
-    """, unsafe_allow_html=True)
+# Nhập dữ liệu từ người dùng
+t_time = st.number_input("Bạn muốn dự đoán sau bao nhiêu phút?", min_value=1, value=5)
+user_price = st.number_input("Nhập giá BNB hiện tại (USD):", min_value=0.0)
 
-st.title("🛡️ BNB AI MARKET SENTINEL")
-st.caption("Phiên bản nâng cấp bởi Nguyen Thanh Duy")
+if st.button("Phân tích ngay"):
+    with st.spinner('Đang học dữ liệu thị trường...'):
+        # Lấy dữ liệu 7 ngày gần nhất, khung 1 phút
+        data = yf.download("BNB-USD", period="7d", interval="1m")
+        df = data[['Close']].copy()
+        
+        # TẠO CHIẾN THUẬT TĂNG TỶ LỆ ĐÚNG: Thêm các chỉ báo kỹ thuật
+        df['MA5'] = df['Close'].rolling(5).mean()
+        df['MA20'] = df['Close'].rolling(20).mean()
+        df['Volatility'] = df['Close'].diff()
+        
+        # Gán nhãn: 1 là Tăng, 0 là Giảm sau t_time
+        df['Target'] = (df['Close'].shift(-t_time) > df['Close']).astype(int)
+        df.dropna(inplace=True)
 
-# Sidebar cấu hình
-with st.sidebar:
-    st.header("🎮 Điều khiển")
-    t_min = st.slider("Dự đoán sau (phút):", 1, 60, 15)
-    analyze_btn = st.button("🔥 QUÉT THỊ TRƯỜNG", use_container_width=True)
+        # Huấn luyện AI
+        X = df[['Close', 'MA5', 'MA20', 'Volatility']]
+        y = df['Target']
+        
+        split = int(len(df) * 0.8)
+        model = RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42)
+        model.fit(X[:split], y[:split])
+        
+        # Tính tỷ lệ đúng thực tế
+        acc = model.score(X[split:], y[split:]) * 100
+        
+        # Dự đoán ván hiện tại
+        current_val = np.array([[user_price if user_price > 0 else df['Close'].iloc[-1], 
+                                 df['MA5'].iloc[-1], df['MA20'].iloc[-1], df['Volatility'].iloc[-1]]])
+        pred = model.predict(current_val)
 
-if analyze_btn:
-    with st.spinner('AI đang học lệnh...'):
-        # 1. Lấy dữ liệu
-        data = yf.download("BNB-USD", period="7d", interval="1m", progress=False)
-        df = data[['Close']].copy()
-        
-        # 2. Chỉ báo kỹ thuật (Tăng độ chính xác)
-        df['MA10'] = df['Close'].rolling(10).mean()
-        df['MA30'] = df['Close'].rolling(30).mean()
-        # Tính RSI
-        delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        df['RSI'] = 100 - (100 / (1 + (gain/loss)))
-        
-        df.dropna(inplace=True)
-
-        # 3. Training AI
-        X = df[['Close', 'MA10', 'MA30', 'RSI']]
-        y = (df['Close'].shift(-t_min) > df['Close']).astype(int)
-        
-        model = RandomForestClassifier(n_estimators=200, random_state=42)
-        model.fit(X[:-t_min], y[:-t_min])
-
-        # 4. Predict
-        curr_feat = X.iloc[[-1]]
-        pred = model.predict(curr_feat)[0]
-        prob = model.predict_proba(curr_feat)[0]
-
-        # --- GIAO DIỆN KẾT QUẢ ---
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric("Giá Hiện Tại", f"${df['Close'].iloc[-1]:.2f}")
-        
-        with col2:
-            sentiment = "TĂNG 📈" if pred == 1 else "GIẢM 📉"
-            color = "#00FF00" if pred == 1 else "#FF4B4B"
-            st.markdown(f"### Dự đoán: <span style='color:{color}'>{sentiment}</span>", unsafe_allow_html=True)
-            
-        with col3:
-            st.metric("Độ tin cậy", f"{prob[pred]*100:.1f}%")
-
-        # 5. Biểu đồ nến chuyên nghiệp
-        fig = go.Figure(data=[go.Scatter(x=df.index, y=df['Close'], name="Giá BNB", line=dict(color='#f3ba2f'))])
-        fig.update_layout(template="plotly_dark", title=f"Biểu đồ BNB (7 ngày qua)", height=400)
-        st.plotly_chart(fig, use_container_width=True)
-
-else:
-    st.info("👋 Duy ơi, nhấn 'QUÉT THỊ TRƯỜNG' để xem AI dự đoán nhé!")
+        # Hiển thị kết quả
+        st.success(f"Tỷ lệ đúng của mô hình trong 7 ngày qua: {acc:.2f}%")
+        result = "TĂNG 📈" if pred[0] == 1 else "GIẢM 📉"
+        st.header(f"Dự đoán sau {t_time} phút: {result}")
